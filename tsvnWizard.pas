@@ -25,7 +25,7 @@ uses
   Classes, Controls, Graphics, ImgList, ExtCtrls, ActnList, XMLIntf;
 
 const
-  VERSION = '1.7.99';
+  VERSION = '1.8.1';
 
 const
   SVN_PROJECT_EXPLORER      =  0;
@@ -54,6 +54,9 @@ const
   SVN_PLUGIN_PROJ_SETTINGS  = 23;
   SVN_VERB_COUNT            = 24;
 
+// Define this to look for the "Version control" entry in the popup menu and hook into the submenu
+{.$DEFINE UseVersionMenu}
+
 var
   TSVNPath: string;
   SVNExe: string;
@@ -68,7 +71,7 @@ type
   TProjectMenuTimer = class;
 
   TTortoiseSVN = class(TNotifierObject, IOTANotifier, IOTAWizard
-                       {$if CompilerVersion > 18}, INTAProjectMenuCreatorNotifier{$ifend} )
+                       {$if CompilerVersion > 18}, INTAProjectMenuCreatorNotifier{$endif} )
   strict private
     IsPopup: Boolean;
     IsProject: Boolean;
@@ -269,6 +272,24 @@ type
     property Opened: Boolean read _Opened write _Opened;
   end;
 
+  IEditorMenuPopupListener = interface
+  ['{F2123551-23F0-40BB-9B44-8F0085FE19E1}']
+    procedure RegisterPopup(const APopup: TPopupMenu);
+  end;
+
+  TEditorMenuPopupListener = class(TInterfacedObject, IEditorMenuPopupListener)
+  private
+    FPopup: TPopupMenu;
+    FOldPopupListener: TNotifyEvent;
+
+    procedure Remove;
+  public
+    destructor Destroy; override;
+
+    procedure MenuPopup(Sender: TObject);
+    procedure RegisterPopup(const APopup: TPopupMenu);
+  end;
+
 {$IFNDEF DLL_MODE}
 
 procedure Register;
@@ -283,7 +304,7 @@ function InitWizard(const BorlandIDEServices: IBorlandIDEServices;
 
 implementation
 
-uses TypInfo, Contnrs, UHelperFunctions, IniFiles, UFmProjectSettings;
+uses TypInfo, Contnrs, UHelperFunctions, IniFiles, UFmProjectSettings, Forms;
 
 var
   MenuCreatorNotifier: Integer = -1;
@@ -297,6 +318,10 @@ var
   EditorNotifierList: TStringList;
   ModifiedFiles: TStringList;
   ModuleNotifierList: TStringList;
+  EditorMenuPopupListener: IEditorMenuPopupListener;
+{$IFDEF UseVersionMenu}
+  VersionControlMenuPopup: TMenuItem;
+{$ENDIF}
 
 procedure WriteDebug(Text: string);
 const
@@ -385,7 +410,7 @@ var
   Project: IOTAProject;
   {$if CompilerVersion < 21} // pre Delphi2010
   ModInfo: IOTAModuleInfo;
-  {$ifend}
+  {$endif}
   FileName: string;
 begin
   FileList.Clear;
@@ -402,7 +427,7 @@ begin
     begin
       GetModuleFiles(FileList, ModInfo.OpenModule);
     end;
-    {$ifend}
+    {$endif}
   end else
   begin
     ModServices := BorlandIDEServices as IOTAModuleServices;
@@ -441,7 +466,7 @@ var
   ItemList: TStringList;
   {$if CompilerVersion < 21} // pre Delphi2010
   ModInfo: IOTAModuleInfo;
-  {$ifend}
+  {$endif}
 begin
   if (IsPopup) and (not IsEditor) then
   begin
@@ -461,7 +486,7 @@ begin
       begin
         GetModuleFiles(ItemList, ModInfo.OpenModule);
       end;
-      {$ifend}
+      {$endif}
 
       if (ItemList.Count > 0) then
       begin
@@ -826,7 +851,7 @@ var
   Project: IOTAProject;
   {$if CompilerVersion < 21} // pre Delphi2010
   ModInfo: IOTAModuleInfo;
-  {$ifend}
+  {$endif}
 begin
   // update the diff item and submenu; the diff action is handled by the
   // menu item itself, not by the action list
@@ -915,7 +940,7 @@ begin
       begin
         GetModuleFiles(ItemList, ModInfo.OpenModule);
       end;
-      {$ifend}
+      {$endif}
 
       if (ItemList.Count > 0) then
       begin
@@ -1101,7 +1126,7 @@ begin
   begin
     MenuCreatorNotifier := ProjManager.AddMenuCreatorNotifier(Self);
   end;
-  {$ifend}
+  {$endif}
 
   if Supports(BorlandIDEServices, IOTAServices, Services) then
   begin
@@ -1948,40 +1973,33 @@ begin
 end;
 
 class function TIdeNotifier.RegisterPopup(View: IOTAEditView): Boolean;
+var
+  EditWindow: INTAEditWindow;
+  Frm: TCustomForm;
 begin
   WriteDebug('TIdeNotifier.RegisterPopup :: start');
 
-  if (Assigned(EditMenuItem)) then
-  begin
-    Result := True;
-    Exit;
-  end;
-  
   if (EditPopup = nil) then
   begin
     try
-      EditPopup := (View.GetEditWindow.Form.FindComponent('EditorLocalMenu') as TPopupMenu);
+      EditWindow := View.GetEditWindow;
+      if (not Assigned(EditWindow)) then
+        Exit;
+
+      Frm := EditWindow.Form;
+      if (not Assigned(Frm)) then
+        Exit;
+
+      EditPopup := (Frm.FindComponent('EditorLocalMenu') as TPopupMenu);
+
+      if not Assigned(EditorMenuPopupListener) then
+        EditorMenuPopupListener := TEditorMenuPopupListener.Create;
+
+      EditorMenuPopupListener.RegisterPopup(EditPopup);
     except
     end;
   end;
 
-  if (not Assigned(EditPopup)) then
-  begin
-    Result := False;
-    Exit;
-  end;
-
-  if (EditMenuItem = nil) then
-  begin
-    EditMenuItem := TMenuItem.Create(EditPopup);
-    EditMenuItem .Caption := 'TortoiseSVN';
-    EditMenuItem.Visible := True;
-    EditMenuItem.Tag := 4 or 1;
-    EditMenuItem.OnClick := TortoiseSVN.TSVNMenuClick;
-      
-    TortoiseSVN.CreateMenu(EditMenuItem, sFileContainer);
-    EditPopup.Items.Add(EditMenuItem);
-  end;
   Result := True;
 end;
 
@@ -2481,6 +2499,97 @@ begin
 end;
 
 
+{ TEditorMenuPopupListener }
+
+destructor TEditorMenuPopupListener.Destroy;
+begin
+  try
+    Remove;
+  finally
+    inherited;
+  end;
+end;
+
+procedure TEditorMenuPopupListener.MenuPopup(Sender: TObject);
+{$IFDEF UseVersionMenu}
+var
+  I: Integer;
+{$ENDIF}
+begin
+  EditPopup := TPopupMenu(Sender);
+
+  // Always clear the items first, then add yourself again
+  EditPopup.Items.Clear;
+
+  // Delphis original popup listener adds all the items back again
+  if Assigned(FOldPopupListener) then
+    FOldPopupListener(Sender);
+
+{$IFDEF UseVersionMenu}
+  for I := 0 to EditPopup.Items.Count - 1 do
+  begin
+    if (EditPopup.Items[I].Name = 'VersionControlAction') then
+    begin
+      VersionControlMenuPopup := EditPopup.Items[I];
+      Break;
+    end;
+  end;
+{$ENDIF}
+
+
+{$IFDEF UseVersionMenu}
+  if Assigned(VersionControlMenuPopup) then
+    EditMenuItem := TMenuItem.Create(VersionControlMenuPopup)
+  else
+{$ENDIF}
+    EditMenuItem := TMenuItem.Create(EditPopup);
+
+  EditMenuItem := TMenuItem.Create(EditPopup);
+  EditMenuItem.Name := 'TortoiseSVNPopupMenuEntry';
+  EditMenuItem.Caption := 'TortoiseSVN';
+  EditMenuItem.Visible := True;
+  EditMenuItem.Tag := 4 or 1;
+  EditMenuItem.OnClick := TortoiseSVN.TSVNMenuClick;
+
+  TortoiseSVN.CreateMenu(EditMenuItem, sFileContainer);
+
+{$IFDEF UseVersionMenu}
+  if Assigned(VersionControlMenuPopup) then
+    VersionControlMenuPopup.Add(EditMenuItem)
+  else
+{$ENDIF}
+    EditPopup.Items.Add(EditMenuItem);
+end;
+
+procedure TEditorMenuPopupListener.RegisterPopup(const APopup: TPopupMenu);
+begin
+  Remove;
+
+  FPopup := APopup;
+
+  FOldPopupListener := FPopup.OnPopup;
+  FPopup.OnPopup := Self.MenuPopup;
+end;
+
+procedure TEditorMenuPopupListener.Remove;
+var
+  MyPopup: TNotifyEvent;
+begin
+  // Remove self from current popup menu if assigned
+  if Assigned(FPopup) then
+  begin
+    try
+      MyPopup := MenuPopup;
+      if (@FPopup.OnPopup = @MyPopup) then
+      begin
+        FPopup.OnPopup := FOldPopupListener;
+        FOldPopupListener := nil;
+      end;
+    except
+    end;
+  end;
+end;
+
 initialization
   WriteDebug('initialization ' + DateTimeToStr(Now));
   NotifierList := TStringList.Create;
@@ -2538,23 +2647,42 @@ finalization
 
   try
     WriteDebug('Should I remove the EditMenuItem?');
-    if (EditPopup <> nil) and
-       (EditMenuItem <> nil) and
-       (EditPopup.Items.IndexOf(EditMenuItem) > -1) then
+    EditorMenuPopupListener := nil;
+
+    if (EditMenuItem <> nil) then
     begin
-      WriteDebug('Yes, I should!');
-      EditPopup.Items.Remove(EditMenuItem);
-      EditPopup := nil;
-    end else
-    begin
-      WriteDebug('Nope!');
+      WriteDebug('Possibly!');
+
+{$IFDEF UseVersionMenu}
+      if (Assigned(VersionControlMenuPopup)) and
+         (VersionControlMenuPopup.IndexOf(EditMenuItem) > -1) then
+      begin
+        WriteDebug('Yes, I should!');
+        VersionControlMenuPopup.Remove(EditMenuItem);
+        EditMenuItem := nil;
+      end
+      else
+{$ENDIF}
+      if (EditPopup <> nil) and
+         (EditPopup.Items.IndexOf(EditMenuItem) > -1) then
+      begin
+        WriteDebug('Yes, I should!');
+        EditPopup.Items.Remove(EditMenuItem);
+        EditPopup := nil;
+      end
+      else
+      begin
+        WriteDebug('Nope!');
+      end;
     end;
   except
   end;
 
   try
     WriteDebug('Should I free the EditMenuItem?');
-    if (EditMenuItem <> nil) then
+
+    // Only remove if it's ours
+    if (EditMenuItem <> nil) and (EditMenuItem.Name = 'TortoiseSVNPopupMenuEntry') then
     begin
       WriteDebug('Yes, I should!');
       EditMenuItem.Free;
