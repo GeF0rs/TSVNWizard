@@ -1,6 +1,5 @@
 These projects use the "new" OpenTools API (available in Delphi 4 and newer).
 
-
 To compile you may need to add the following entry: 
  - - - - - - - - - - - - - - - 
    $(DELPHI)\source\toolsapi
